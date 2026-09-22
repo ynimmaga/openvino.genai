@@ -213,6 +213,34 @@ if(NOT ENABLE_GGUF)
     list(REMOVE_ITEM SOURCE_FILES ${GGUF_SOURCES})
 endif()
 
+# GGML pipeline (experimental): text generation on a ggml backend (Vulkan / CPU / ...).
+#
+# Needs openvino_ggml_emitter, an experimental OpenVINO component built with
+# -DENABLE_GGML_EMITTER=ON. It is not exported through find_package(OpenVINO), so point
+# -DOV_GGML_EMITTER_ROOT at the OpenVINO source tree (headers) and OV_GGML_EMITTER_LIB_DIR at
+# its bin directory, or let the defaults below find them next to the OpenVINO install.
+option(ENABLE_GGML_PIPELINE "Experimental GgmlPipeline: generation on a ggml backend" OFF)
+
+set(GGML_PIPELINE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_pipeline.cpp)
+
+if(ENABLE_GGML_PIPELINE)
+    find_path(OV_GGML_EMITTER_INCLUDE_DIR openvino/ggml_emitter/emitter.hpp
+              HINTS ${OV_GGML_EMITTER_ROOT}/src/ggml_emitter/include
+                    ${OV_GGML_EMITTER_ROOT}/runtime/include)
+    find_library(OV_GGML_EMITTER_LIBRARY openvino_ggml_emitter
+                 HINTS ${OV_GGML_EMITTER_LIB_DIR}
+                       ${OV_GGML_EMITTER_ROOT}/bin/intel64/Release
+                       ${OV_GGML_EMITTER_ROOT}/runtime/lib/intel64)
+    if(NOT OV_GGML_EMITTER_INCLUDE_DIR OR NOT OV_GGML_EMITTER_LIBRARY)
+        message(FATAL_ERROR
+            "ENABLE_GGML_PIPELINE=ON but openvino_ggml_emitter was not found. Build OpenVINO "
+            "with -DENABLE_GGML_EMITTER=ON and pass -DOV_GGML_EMITTER_ROOT=<openvino tree>.")
+    endif()
+    message(STATUS "GgmlPipeline enabled (${OV_GGML_EMITTER_LIBRARY})")
+else()
+    list(REMOVE_ITEM SOURCE_FILES ${GGML_PIPELINE_SOURCES})
+endif()
+
 set(TARGET_NAME openvino_genai)
 set(TARGET_NAME_OBJ ${TARGET_NAME}_obj)
 
@@ -230,6 +258,12 @@ endif()
 if(ENABLE_GGUF)
     target_link_libraries(${TARGET_NAME_OBJ} PRIVATE gguflib)
     target_compile_definitions(${TARGET_NAME_OBJ} PRIVATE ENABLE_GGUF)
+endif()
+
+if(ENABLE_GGML_PIPELINE)
+    target_include_directories(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_EMITTER_INCLUDE_DIR})
+    target_link_libraries(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_EMITTER_LIBRARY})
+    target_compile_definitions(${TARGET_NAME_OBJ} PRIVATE ENABLE_GGML_PIPELINE)
 endif()
 
 target_include_directories(${TARGET_NAME_OBJ} SYSTEM PRIVATE "${safetensors.h_SOURCE_DIR}")
@@ -292,6 +326,11 @@ endif()
 
 if(ENABLE_GGUF)
   target_link_libraries(${TARGET_NAME} PRIVATE gguflib)
+endif()
+
+# The OBJECT library only carries usage requirements; the shared library is what actually links.
+if(ENABLE_GGML_PIPELINE)
+    target_link_libraries(${TARGET_NAME} PRIVATE ${OV_GGML_EMITTER_LIBRARY})
 endif()
 
 target_compile_features(${TARGET_NAME} INTERFACE cxx_std_17)
