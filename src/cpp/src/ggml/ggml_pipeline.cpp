@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <vector>
 
 #include "openvino/ggml_emitter/emitter.hpp"
@@ -45,18 +46,46 @@ std::shared_ptr<StreamerBase> resolve_streamer(StreamerVariant v, const Tokenize
 
 class GgmlPipeline::Impl {
 public:
-    Impl(std::shared_ptr<ov::ggml_emitter::GgmlModel> model, Tokenizer tokenizer)
-        : m_model(std::move(model)),
-          m_tokenizer(std::move(tokenizer)),
-          m_sampler(m_tokenizer),
-          m_logits(m_model->logits_size()) {
+    Impl(std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> buckets, Tokenizer tokenizer)
+        : m_buckets(std::move(buckets)), m_tokenizer(std::move(tokenizer)), m_sampler(m_tokenizer) {
+        OPENVINO_ASSERT(m_buckets.count(1), "[GGML] a bucket size 1 is required (decode is always "
+                                           "single-token)");
+        m_model = m_buckets.at(1);
         m_n_kv = m_model->context_size();
         OPENVINO_ASSERT(m_n_kv > 0, "[GGML] model did not report a context size");
+        m_logits.resize(m_model->logits_size());
+        for (const auto& kv : m_buckets) {
+            OPENVINO_ASSERT(kv.second->context_size() == m_n_kv &&
+                                kv.second->logits_size() == m_logits.size(),
+                            "[GGML] all prefill buckets must share one context size and vocabulary");
+        }
         m_config.eos_token_id = m_tokenizer.get_eos_token_id();
+    }
+
+    // Each bucket owns separate KV cache tensors, so a step on one doesn't update the others.
+    // Only the model about to run needs the current state, and only if a different bucket ran
+    // last (decode stays on bucket 1 call after call, so this is a no-op almost every step).
+    void sync_before(const std::shared_ptr<ov::ggml_emitter::GgmlModel>& next) {
+        if (m_active && m_active != next) {
+            for (const auto& name : m_active->input_names()) {
+                if (name.rfind("cache_", 0) != 0) {
+                    continue;
+                }
+                const size_t nbytes = m_active->input_nbytes(name);
+                if (m_cache_buf.size() < nbytes) {
+                    m_cache_buf.resize(nbytes);
+                }
+                if (m_active->read_input(name, m_cache_buf.data(), nbytes)) {
+                    next->write_input(name, m_cache_buf.data(), nbytes);
+                }
+            }
+        }
+        m_active = next;
     }
 
     /// One forward pass at absolute position `pos`, writing K/V into cache slot `pos`.
     void forward(int64_t token, int32_t pos) {
+        sync_before(m_model);
         const int32_t tok32 = static_cast<int32_t>(token);
         const int32_t out_id = 0;
         const int64_t slot = pos;
@@ -85,6 +114,56 @@ public:
         m_model->read_logits(m_logits.data());
     }
 
+    // Smallest bucket that fits `remaining`, else the largest available (consumed with no
+    // padding, looping again for the rest).
+    size_t pick_bucket(size_t remaining) const {
+        auto it = m_buckets.lower_bound(remaining);
+        return it != m_buckets.end() ? it->first : m_buckets.rbegin()->first;
+    }
+
+    // One batched forward pass: `chunk` real tokens (ids[0..chunk)) at base_pos, base_pos+1, ...,
+    // padded up to `bucket` with a dummy token routed to a reserved scratch KV slot so it can
+    // never collide with a real future position. Real rows only ever unmask their own causal
+    // prefix, so padding rows are already outside every real row's attention.
+    void forward_batch(const int64_t* ids, size_t chunk, size_t bucket, int32_t base_pos) {
+        auto& model = m_buckets.at(bucket);
+        sync_before(model);
+        std::vector<int32_t> tok_buf(bucket, 0), pos_buf(bucket, 0);
+        std::vector<int64_t> slot_buf(bucket, 0);
+        for (size_t i = 0; i < chunk; i++) {
+            tok_buf[i] = static_cast<int32_t>(ids[i]);
+            pos_buf[i] = base_pos + static_cast<int32_t>(i);
+            slot_buf[i] = base_pos + static_cast<int64_t>(i);
+        }
+        for (size_t i = chunk; i < bucket; i++) {
+            slot_buf[i] = static_cast<int64_t>(m_n_kv) - 1 - static_cast<int64_t>(i - chunk);
+        }
+        model->write_input("inp_tokens", tok_buf.data(), tok_buf.size() * sizeof(int32_t));
+        model->write_input("inp_pos", pos_buf.data(), pos_buf.size() * sizeof(int32_t));
+        for (const auto& name : model->input_names()) {
+            if (name.rfind("inp_kv_idx", 0) == 0) {
+                model->write_input(name, slot_buf.data(), slot_buf.size() * sizeof(int64_t));
+            }
+        }
+        const int32_t out_id = static_cast<int32_t>(chunk) - 1;  // last real row
+        model->write_input("inp_out_ids", &out_id, sizeof(out_id));
+
+        for (const auto& name : model->input_names()) {
+            if (name.rfind("self_kq_mask", 0) != 0 && name.rfind("attn_inp_kq_mask", 0) != 0) {
+                continue;
+            }
+            std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
+            for (size_t r = 0; r < chunk; r++) {
+                for (int32_t c = 0; c <= base_pos + static_cast<int32_t>(r); c++) {
+                    if (static_cast<size_t>(c) < m_n_kv) mask[r * m_n_kv + c] = 0;
+                }
+            }
+            model->write_input(name, mask.data(), mask.size() * sizeof(uint16_t));
+        }
+        OPENVINO_ASSERT(model->compute(), "[GGML] batched compute failed at position ", base_pos);
+        model->read_logits(m_logits.data());
+    }
+
     EncodedResults generate(const std::vector<int64_t>& input_ids,
                             OptionalGenerationConfig generation_config,
                             StreamerVariant streamer) {
@@ -109,11 +188,17 @@ public:
         auto streamer_ptr = resolve_streamer(std::move(streamer), m_tokenizer);
         auto group = std::make_shared<SequenceGroup>(0, input_ids, config);
 
-        // Prefill. The graph is single-token, so the prompt is fed one token per pass; the
-        // causal mask makes this equivalent to a batched prefill, only slower.
+        // Prefill in as few batched forward passes as the available buckets allow (degenerates
+        // to one token per pass when the only registered bucket is size 1).
         int32_t pos = static_cast<int32_t>(m_chat_kv_used);
-        for (size_t i = 0; i < input_ids.size(); i++) {
-            forward(input_ids[i], pos++);
+        size_t offset = 0, remaining = input_ids.size();
+        while (remaining > 0) {
+            const size_t bucket = pick_bucket(remaining);
+            const size_t chunk = std::min(remaining, bucket);
+            forward_batch(input_ids.data() + offset, chunk, bucket, pos);
+            pos += static_cast<int32_t>(chunk);
+            offset += chunk;
+            remaining -= chunk;
         }
         group->schedule_tokens(group->get_prompt_len());
         group->set_output_seq_len(1);
@@ -224,9 +309,12 @@ public:
 
     GenerationConfig m_config;
     Tokenizer m_tokenizer;
-    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_model;
+    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_model;  // == m_buckets.at(1); used for decode
 
 private:
+    std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> m_buckets;
+    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_active;  // whose cache is authoritative
+    std::vector<char> m_cache_buf;  // scratch for sync_before()
     Sampler m_sampler;
     std::vector<float> m_logits;
     size_t m_n_kv = 0;
@@ -241,16 +329,30 @@ GgmlPipeline::GgmlPipeline(const std::filesystem::path& models_path,
                            size_t n_kv,
                            const std::string& backend)
     : m_impl(std::make_unique<Impl>(
-          ov::ggml_emitter::GgmlModel::build(models_path.string(), static_cast<int>(n_kv), backend),
+          std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>>{
+              {1, ov::ggml_emitter::GgmlModel::build(models_path.string(), static_cast<int>(n_kv),
+                                                     backend)}},
           Tokenizer(models_path))) {}
 
 GgmlPipeline::GgmlPipeline(const std::filesystem::path& cgraph_path,
                            const std::filesystem::path& models_path,
                            const std::string& backend)
     : m_impl(std::make_unique<Impl>(
-          ov::ggml_emitter::GgmlModel::from_cgraph(cgraph_path.string(), models_path.string(),
-                                                   backend),
+          std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>>{
+              {1, ov::ggml_emitter::GgmlModel::from_cgraph(cgraph_path.string(),
+                                                           models_path.string(), backend)}},
           Tokenizer(models_path))) {}
+
+GgmlPipeline::GgmlPipeline(const std::vector<std::pair<size_t, std::filesystem::path>>& bucket_cgraphs,
+                           const std::filesystem::path& models_path,
+                           const std::string& backend) {
+    std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> buckets;
+    for (const auto& b : bucket_cgraphs) {
+        buckets[b.first] =
+            ov::ggml_emitter::GgmlModel::from_cgraph(b.second.string(), models_path.string(), backend);
+    }
+    m_impl = std::make_unique<Impl>(std::move(buckets), Tokenizer(models_path));
+}
 
 GgmlPipeline::~GgmlPipeline() = default;
 

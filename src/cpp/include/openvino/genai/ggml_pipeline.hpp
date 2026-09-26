@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "openvino/genai/generation_config.hpp"
 #include "openvino/genai/llm_pipeline.hpp"
@@ -59,6 +61,26 @@ public:
      * The artifact fixes the context length, so n_kv is taken from it rather than given.
      */
     GgmlPipeline(const std::filesystem::path& cgraph_path,
+                 const std::filesystem::path& models_path,
+                 const std::string& backend);
+
+    /**
+     * @brief Build from several cgraph artifacts dumped at different token counts (dump_cgraph
+     * N_TOKENS=1,4,8,...), so a prompt prefills in as few batched forward passes as possible
+     * instead of one token at a time.
+     * @param bucket_cgraphs (bucket size, cgraph path) pairs. MUST include a size-1 entry: it is
+     * also used for the single-token decode step after prefill. All buckets must share the same
+     * .gguf, context length and vocabulary (asserted).
+     * @param models_path the .gguf the weights are read from
+     * @param backend ggml backend device name; empty auto-selects
+     *
+     * Prefill picks the smallest bucket that fits the remaining prompt and pads any unused rows
+     * with a dummy token routed to a reserved KV slot; if the remainder exceeds every bucket, it
+     * consumes the largest bucket's worth of real tokens (no padding) and continues. A prompt
+     * that happens to need no padding at any step is bit-identical to the single-graph path;
+     * this is strictly an additive speedup, not a different code path.
+     */
+    GgmlPipeline(const std::vector<std::pair<size_t, std::filesystem::path>>& bucket_cgraphs,
                  const std::filesystem::path& models_path,
                  const std::string& backend);
 
