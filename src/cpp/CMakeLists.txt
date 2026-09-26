@@ -221,7 +221,8 @@ endif()
 # its bin directory, or let the defaults below find them next to the OpenVINO install.
 option(ENABLE_GGML_PIPELINE "Experimental GgmlPipeline: generation on a ggml backend" OFF)
 
-set(GGML_PIPELINE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_pipeline.cpp)
+set(GGML_PIPELINE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_pipeline.cpp
+                         ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_vlm_pipeline.cpp)
 
 if(ENABLE_GGML_PIPELINE)
     find_path(OV_GGML_EMITTER_INCLUDE_DIR openvino/ggml_emitter/emitter.hpp
