@@ -215,29 +215,31 @@ endif()
 
 # GGML pipeline (experimental): text generation on a ggml backend (Vulkan / CPU / ...).
 #
-# Needs openvino_ggml_emitter, an experimental OpenVINO component built with
-# -DENABLE_GGML_EMITTER=ON. It is not exported through find_package(OpenVINO), so point
-# -DOV_GGML_EMITTER_ROOT at the OpenVINO source tree (headers) and OV_GGML_EMITTER_LIB_DIR at
-# its bin directory, or let the defaults below find them next to the OpenVINO install.
+# Needs openvino_ggml_cgraph_loader, an experimental OpenVINO component built with
+# -DENABLE_GGML_CGRAPH_LOADER=ON. It is not exported through find_package(OpenVINO), so point
+# -DOV_GGML_CGRAPH_LOADER_ROOT at the OpenVINO source tree (headers) and
+# OV_GGML_CGRAPH_LOADER_LIB_DIR at its bin directory, or let the defaults below find them next to
+# the OpenVINO install.
 option(ENABLE_GGML_PIPELINE "Experimental GgmlPipeline: generation on a ggml backend" OFF)
 
 set(GGML_PIPELINE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_pipeline.cpp
                          ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_vlm_pipeline.cpp)
 
 if(ENABLE_GGML_PIPELINE)
-    find_path(OV_GGML_EMITTER_INCLUDE_DIR openvino/ggml_emitter/emitter.hpp
-              HINTS ${OV_GGML_EMITTER_ROOT}/src/ggml_emitter/include
-                    ${OV_GGML_EMITTER_ROOT}/runtime/include)
-    find_library(OV_GGML_EMITTER_LIBRARY openvino_ggml_emitter
-                 HINTS ${OV_GGML_EMITTER_LIB_DIR}
-                       ${OV_GGML_EMITTER_ROOT}/bin/intel64/Release
-                       ${OV_GGML_EMITTER_ROOT}/runtime/lib/intel64)
-    if(NOT OV_GGML_EMITTER_INCLUDE_DIR OR NOT OV_GGML_EMITTER_LIBRARY)
+    find_path(OV_GGML_CGRAPH_LOADER_INCLUDE_DIR openvino/ggml_cgraph_loader/ggml_model.hpp
+              HINTS ${OV_GGML_CGRAPH_LOADER_ROOT}/src/ggml_cgraph_loader/include
+                    ${OV_GGML_CGRAPH_LOADER_ROOT}/runtime/include)
+    find_library(OV_GGML_CGRAPH_LOADER_LIBRARY openvino_ggml_cgraph_loader
+                 HINTS ${OV_GGML_CGRAPH_LOADER_LIB_DIR}
+                       ${OV_GGML_CGRAPH_LOADER_ROOT}/bin/intel64/Release
+                       ${OV_GGML_CGRAPH_LOADER_ROOT}/runtime/lib/intel64)
+    if(NOT OV_GGML_CGRAPH_LOADER_INCLUDE_DIR OR NOT OV_GGML_CGRAPH_LOADER_LIBRARY)
         message(FATAL_ERROR
-            "ENABLE_GGML_PIPELINE=ON but openvino_ggml_emitter was not found. Build OpenVINO "
-            "with -DENABLE_GGML_EMITTER=ON and pass -DOV_GGML_EMITTER_ROOT=<openvino tree>.")
+            "ENABLE_GGML_PIPELINE=ON but openvino_ggml_cgraph_loader was not found. Build "
+            "OpenVINO with -DENABLE_GGML_CGRAPH_LOADER=ON and pass "
+            "-DOV_GGML_CGRAPH_LOADER_ROOT=<openvino tree>.")
     endif()
-    message(STATUS "GgmlPipeline enabled (${OV_GGML_EMITTER_LIBRARY})")
+    message(STATUS "GgmlPipeline enabled (${OV_GGML_CGRAPH_LOADER_LIBRARY})")
 else()
     list(REMOVE_ITEM SOURCE_FILES ${GGML_PIPELINE_SOURCES})
 endif()
@@ -262,8 +264,8 @@ if(ENABLE_GGUF)
 endif()
 
 if(ENABLE_GGML_PIPELINE)
-    target_include_directories(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_EMITTER_INCLUDE_DIR})
-    target_link_libraries(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_EMITTER_LIBRARY})
+    target_include_directories(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_CGRAPH_LOADER_INCLUDE_DIR})
+    target_link_libraries(${TARGET_NAME_OBJ} PRIVATE ${OV_GGML_CGRAPH_LOADER_LIBRARY})
     target_compile_definitions(${TARGET_NAME_OBJ} PRIVATE ENABLE_GGML_PIPELINE)
 endif()
 
@@ -331,7 +333,7 @@ endif()
 
 # The OBJECT library only carries usage requirements; the shared library is what actually links.
 if(ENABLE_GGML_PIPELINE)
-    target_link_libraries(${TARGET_NAME} PRIVATE ${OV_GGML_EMITTER_LIBRARY})
+    target_link_libraries(${TARGET_NAME} PRIVATE ${OV_GGML_CGRAPH_LOADER_LIBRARY})
 endif()
 
 target_compile_features(${TARGET_NAME} INTERFACE cxx_std_17)

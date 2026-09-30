@@ -10,7 +10,7 @@
 #include <cmath>
 #include <vector>
 
-#include "openvino/ggml_emitter/emitter.hpp"
+#include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 
 #include "openvino/genai/text_streamer.hpp"
 #include "sampling/sampler.hpp"
@@ -110,8 +110,8 @@ std::vector<float> preprocess_image(const ov::Tensor& image, int size, const std
 
 class GgmlVLMPipeline::Impl {
 public:
-    Impl(std::shared_ptr<ov::ggml_emitter::GgmlModel> vision,
-        std::shared_ptr<ov::ggml_emitter::GgmlModel> decoder, Tokenizer tokenizer)
+    Impl(std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> vision,
+        std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> decoder, Tokenizer tokenizer)
         : m_vision(std::move(vision)),
           m_decoder(std::move(decoder)),
           m_tokenizer(std::move(tokenizer)),
@@ -263,7 +263,7 @@ public:
 
     GenerationConfig m_config;
     Tokenizer m_tokenizer;
-    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_vision, m_decoder;
+    std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> m_vision, m_decoder;
 
 private:
     Sampler m_sampler;
@@ -279,10 +279,10 @@ GgmlVLMPipeline::GgmlVLMPipeline(const std::filesystem::path& vision_cgraph_path
                                  const std::filesystem::path& text_model_path,
                                  const std::string& backend)
     : m_impl(std::make_unique<Impl>(
-          ov::ggml_emitter::GgmlModel::from_cgraph(vision_cgraph_path.string(), mmproj_path.string(),
-                                                   backend),
-          ov::ggml_emitter::GgmlModel::from_cgraph(decoder_cgraph_path.string(),
-                                                   text_model_path.string(), backend),
+          ov::ggml_cgraph_loader::GgmlModel::from_cgraph(vision_cgraph_path.string(),
+                                                         mmproj_path.string(), backend),
+          ov::ggml_cgraph_loader::GgmlModel::from_cgraph(decoder_cgraph_path.string(),
+                                                         text_model_path.string(), backend),
           Tokenizer(text_model_path))) {}
 
 GgmlVLMPipeline::~GgmlVLMPipeline() = default;

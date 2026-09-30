@@ -21,7 +21,7 @@ namespace genai {
  * @brief EXPERIMENTAL. Text generation on a ggml backend (Vulkan / CPU / CUDA / Metal).
  *
  * LLMPipeline is built around ov::InferRequest and so cannot drive a ggml backend. This is its
- * sibling: the model is executed by ov::ggml_emitter::GgmlModel while everything above the
+ * sibling: the model is executed by ov::ggml_cgraph_loader::GgmlModel while everything above the
  * executor -- tokenizer, chat template, sampler, stop conditions, streaming -- is the SAME GenAI
  * code the other pipelines use.
  *
@@ -31,27 +31,14 @@ namespace genai {
  * (temperature, top-k/top-p/min-p, repetition/presence/frequency penalties, seeded multinomial,
  * stop strings, logprobs) available over a ggml graph.
  *
- * Two graph sources are accepted, both ending at the same executor:
- *  - a .gguf file, built by OpenVINO's native GGUF decoder builder;
- *  - a cgraph artifact dumped offline from llama.cpp, replayed verbatim. llama.cpp is a
- *    build-time tool in that case and is absent at runtime.
+ * The graph is a cgraph artifact dumped offline from llama.cpp and replayed verbatim. llama.cpp
+ * is a build-time tool and is absent at runtime.
  *
- * LIMITATIONS. The graph is single-token, so a prompt is prefilled one token per forward pass --
- * correct, but not batched. Context length is fixed when the model is built (and, for a cgraph
- * artifact, when it was dumped). Continuous batching, beam search and LoRA are not supported.
+ * LIMITATIONS. Context length is fixed when the artifact was dumped. Continuous batching, beam
+ * search and LoRA are not supported.
  */
 class OPENVINO_GENAI_EXPORTS GgmlPipeline {
 public:
-    /**
-     * @brief Build from a .gguf using OpenVINO's GGUF decoder builder.
-     * @param models_path path to the .gguf file
-     * @param n_kv KV slots, i.e. the maximum context this pipeline can serve
-     * @param backend ggml backend device name; empty selects GPU, then integrated GPU, then CPU
-     */
-    GgmlPipeline(const std::filesystem::path& models_path,
-                 size_t n_kv = 2048,
-                 const std::string& backend = "");
-
     /**
      * @brief Build from a cgraph artifact dumped offline from llama.cpp.
      * @param cgraph_path artifact produced by the dump_cgraph tool ("ov-cgraph-v1")

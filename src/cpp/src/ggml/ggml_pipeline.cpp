@@ -5,7 +5,7 @@
 //
 // The shape of this file is deliberately the same as the stateful pipeline's generation loop
 // (lm_encoding.cpp): schedule tokens, run the model, hand the logits to Sampler, stream, repeat.
-// Only the execution step differs -- ov::InferRequest is replaced by ov::ggml_emitter::GgmlModel.
+// Only the execution step differs -- ov::InferRequest is replaced by ov::ggml_cgraph_loader::GgmlModel.
 // Everything above it is shared GenAI code, which is the entire point of putting this inside the
 // library rather than in an application.
 
@@ -16,7 +16,7 @@
 #include <map>
 #include <vector>
 
-#include "openvino/ggml_emitter/emitter.hpp"
+#include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 
 #include "openvino/genai/text_streamer.hpp"
 #include "sampling/sampler.hpp"
@@ -46,7 +46,7 @@ std::shared_ptr<StreamerBase> resolve_streamer(StreamerVariant v, const Tokenize
 
 class GgmlPipeline::Impl {
 public:
-    Impl(std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> buckets, Tokenizer tokenizer)
+    Impl(std::map<size_t, std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>> buckets, Tokenizer tokenizer)
         : m_buckets(std::move(buckets)), m_tokenizer(std::move(tokenizer)), m_sampler(m_tokenizer) {
         OPENVINO_ASSERT(m_buckets.count(1), "[GGML] a bucket size 1 is required (decode is always "
                                            "single-token)");
@@ -65,7 +65,7 @@ public:
     // Each bucket owns separate KV cache tensors, so a step on one doesn't update the others.
     // Only the model about to run needs the current state, and only if a different bucket ran
     // last (decode stays on bucket 1 call after call, so this is a no-op almost every step).
-    void sync_before(const std::shared_ptr<ov::ggml_emitter::GgmlModel>& next) {
+    void sync_before(const std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>& next) {
         if (m_active && m_active != next) {
             for (const auto& name : m_active->input_names()) {
                 if (name.rfind("cache_", 0) != 0) {
@@ -309,11 +309,11 @@ public:
 
     GenerationConfig m_config;
     Tokenizer m_tokenizer;
-    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_model;  // == m_buckets.at(1); used for decode
+    std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> m_model;  // == m_buckets.at(1); used for decode
 
 private:
-    std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> m_buckets;
-    std::shared_ptr<ov::ggml_emitter::GgmlModel> m_active;  // whose cache is authoritative
+    std::map<size_t, std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>> m_buckets;
+    std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> m_active;  // whose cache is authoritative
     std::vector<char> m_cache_buf;  // scratch for sync_before()
     Sampler m_sampler;
     std::vector<float> m_logits;
@@ -325,31 +325,23 @@ private:
     ChatHistory m_history;
 };
 
-GgmlPipeline::GgmlPipeline(const std::filesystem::path& models_path,
-                           size_t n_kv,
-                           const std::string& backend)
-    : m_impl(std::make_unique<Impl>(
-          std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>>{
-              {1, ov::ggml_emitter::GgmlModel::build(models_path.string(), static_cast<int>(n_kv),
-                                                     backend)}},
-          Tokenizer(models_path))) {}
-
 GgmlPipeline::GgmlPipeline(const std::filesystem::path& cgraph_path,
                            const std::filesystem::path& models_path,
                            const std::string& backend)
     : m_impl(std::make_unique<Impl>(
-          std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>>{
-              {1, ov::ggml_emitter::GgmlModel::from_cgraph(cgraph_path.string(),
-                                                           models_path.string(), backend)}},
+          std::map<size_t, std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>>{
+              {1, ov::ggml_cgraph_loader::GgmlModel::from_cgraph(cgraph_path.string(),
+                                                                 models_path.string(), backend)}},
           Tokenizer(models_path))) {}
 
 GgmlPipeline::GgmlPipeline(const std::vector<std::pair<size_t, std::filesystem::path>>& bucket_cgraphs,
                            const std::filesystem::path& models_path,
                            const std::string& backend) {
-    std::map<size_t, std::shared_ptr<ov::ggml_emitter::GgmlModel>> buckets;
+    std::map<size_t, std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>> buckets;
     for (const auto& b : bucket_cgraphs) {
-        buckets[b.first] =
-            ov::ggml_emitter::GgmlModel::from_cgraph(b.second.string(), models_path.string(), backend);
+        buckets[b.first] = ov::ggml_cgraph_loader::GgmlModel::from_cgraph(b.second.string(),
+                                                                          models_path.string(),
+                                                                          backend);
     }
     m_impl = std::make_unique<Impl>(std::move(buckets), Tokenizer(models_path));
 }
