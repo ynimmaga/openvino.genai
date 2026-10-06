@@ -223,7 +223,8 @@ endif()
 option(ENABLE_GGML_PIPELINE "Experimental GgmlPipeline: generation on a ggml backend" OFF)
 
 set(GGML_PIPELINE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_pipeline.cpp
-                         ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_vlm_pipeline.cpp)
+                         ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_vlm_pipeline.cpp
+                         ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/ggml_whisper_pipeline.cpp)
 
 if(ENABLE_GGML_PIPELINE)
     find_path(OV_GGML_CGRAPH_LOADER_INCLUDE_DIR openvino/ggml_cgraph_loader/ggml_model.hpp
