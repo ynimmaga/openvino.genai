@@ -1245,6 +1245,56 @@ void patch_chat_template_multiline_strings(Tokenizer& tokenizer) {
     tokenizer.set_chat_template(chat_template);
 }
 
+// This is a decorator function that wraps a generation callable to apply parsers and reset them before generation if needed.
+DecodedResults run_generate_with_parsers(const OptionalGenerationConfig& generation_config,
+                                         const StreamerVariant& streamer,
+                                         std::function<DecodedResults(void)> generate_callable) {
+                    
+    std::shared_ptr<ov::genai::TextParserStreamer> parser_streamer;
+    // If streamer is of StreamerBase type, and it is TextParserStreamer, get parsed message
+    // Streaming is available only for batch size 1 therefore only parsed[0]
+    if (auto streamer_obj = std::get_if<std::shared_ptr<ov::genai::StreamerBase>>(&streamer)) {
+        parser_streamer = std::dynamic_pointer_cast<ov::genai::TextParserStreamer>(*streamer_obj);
+    }
+
+    // determine from generation config when 'need_to_reset_parser' will be available
+    // TODO: Determine 'need_to_reset_parser' from generation_config when available.
+    bool need_to_reset_parser = true;
+    if (parser_streamer && need_to_reset_parser) {
+        parser_streamer->reset();
+    }
+
+    auto res = generate_callable();
+    
+    if (parser_streamer) {
+        res.parsed.resize(1);
+        res.parsed[0] = parser_streamer->get_parsed_message();
+    }
+
+    // If no parsers are defined, return
+    if (!generation_config.has_value() || generation_config->parsers.empty()) {
+        return res;
+    }
+    
+    std::vector<std::shared_ptr<ov::genai::Parser>> parsers = generation_config->parsers;
+    res.parsed.resize(res.texts.size());
+    
+    // Apply Base parsers sequentially even if IncrementalParser has run.
+    for (size_t i = 0; i < res.texts.size(); ++i) {
+        auto& msg = res.parsed[i];
+        if (!msg.contains("content")) {
+            // Initialize msg with content
+            msg["content"] = res.texts[i];
+        }
+        
+        for (auto& parser: parsers) {
+            parser->parse(msg);
+        }
+        res.parsed[i] = msg;
+    }
+    return res;
+}
+
 }  // namespace utils
 }  // namespace genai
 }  // namespace ov

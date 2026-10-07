@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include <functional>
 #include <type_traits>
 #include <optional>
 #include <stdexcept>
@@ -461,6 +462,14 @@ ov::genai::GenerationConfig get_multinomial_config();
  * removes any implicit concatenation of adjacent multiline string literals.
  */
 void patch_chat_template_multiline_strings(Tokenizer& tokenizer);
+
+
+/// Wraps a generate() callable so that pipelines share one parser path: resets a
+/// TextParserStreamer before generation, takes its parsed message afterwards, then applies
+/// generation_config->parsers to every decoded text and stores the results in DecodedResults::parsed.
+DecodedResults run_generate_with_parsers(const OptionalGenerationConfig& generation_config,
+                                         const StreamerVariant& streamer,
+                                         std::function<DecodedResults(void)> generate_callable);
 
 }  // namespace utils
 }  // namespace genai

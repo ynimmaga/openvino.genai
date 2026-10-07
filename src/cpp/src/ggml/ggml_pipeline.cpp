@@ -60,6 +60,10 @@ public:
                             "[GGML] all prefill buckets must share one context size and vocabulary");
         }
         m_config.eos_token_id = m_tokenizer.get_eos_token_id();
+        // forward_batch() routes padding rows to the top slots (n_kv-1, n_kv-2, ...); keep real
+        // tokens below them so padding never overwrites live K/V.
+        m_scratch_slots = m_buckets.rbegin()->first - 1;
+        OPENVINO_ASSERT(m_scratch_slots < m_n_kv, "[GGML] largest prefill bucket exceeds the context size");
     }
 
     // Each bucket owns separate KV cache tensors, so a step on one doesn't update the others.
@@ -179,23 +183,36 @@ public:
                         "[GGML] num_return_sequences > 1 requires sequence forking, which needs "
                         "KV cache copy-on-write; not implemented for the ggml backend");
 
-        const size_t budget = m_chat_kv_used + input_ids.size() + config.max_new_tokens;
-        OPENVINO_ASSERT(budget <= m_n_kv,
+        OPENVINO_ASSERT(!input_ids.empty(), "[GGML] empty prompt");
+        const size_t usable = m_n_kv - m_scratch_slots;
+        const size_t budget = input_ids.size() + config.max_new_tokens;
+        OPENVINO_ASSERT(budget <= usable,
                         "[GGML] prompt + max_new_tokens (", budget, ") exceeds the context this "
-                        "graph was built for (", m_n_kv, "). The graph is shape-static, so this "
-                        "cannot grow at runtime -- rebuild with a larger n_kv.");
+                        "graph was built for (", usable, " usable of ", m_n_kv, " slots). The graph is "
+                        "shape-static, so this cannot grow at runtime -- rebuild with a larger n_kv.");
+
+        // Reuse the K/V of the longest prefix already in the cache. A chat turn re-renders the
+        // whole history, so this is what keeps a turn from re-prefilling every earlier one. The
+        // last prompt token is always recomputed: its logits seed the first sample.
+        size_t reuse = 0;
+        const size_t reuse_limit = std::min(m_kv_tokens.size(), input_ids.size() - 1);
+        while (reuse < reuse_limit && m_kv_tokens[reuse] == input_ids[reuse]) {
+            reuse++;
+        }
+        m_kv_tokens.resize(reuse);
 
         auto streamer_ptr = resolve_streamer(std::move(streamer), m_tokenizer);
         auto group = std::make_shared<SequenceGroup>(0, input_ids, config);
 
         // Prefill in as few batched forward passes as the available buckets allow (degenerates
         // to one token per pass when the only registered bucket is size 1).
-        int32_t pos = static_cast<int32_t>(m_chat_kv_used);
-        size_t offset = 0, remaining = input_ids.size();
+        int32_t pos = static_cast<int32_t>(reuse);
+        size_t offset = reuse, remaining = input_ids.size() - reuse;
         while (remaining > 0) {
             const size_t bucket = pick_bucket(remaining);
             const size_t chunk = std::min(remaining, bucket);
             forward_batch(input_ids.data() + offset, chunk, bucket, pos);
+            m_kv_tokens.insert(m_kv_tokens.end(), input_ids.begin() + offset, input_ids.begin() + offset + chunk);
             pos += static_cast<int32_t>(chunk);
             offset += chunk;
             remaining -= chunk;
@@ -229,7 +246,7 @@ public:
         bool cancelled = stream_new_tokens();
 
         // Generation. Feed back the token the sampler chose, exactly as the stateful loop does.
-        while (!cancelled && !group->has_finished() && pos < static_cast<int32_t>(m_n_kv)) {
+        while (!cancelled && !group->has_finished() && pos < static_cast<int32_t>(usable)) {
             const auto running = group->get_running_sequences();
             if (running.empty()) {
                 break;
@@ -239,6 +256,7 @@ public:
                 break;
             }
             forward(gen.back(), pos++);
+            m_kv_tokens.push_back(gen.back());
             group->schedule_tokens(1);
             m_sampler.sample(groups, logits_tensor);
             cancelled = stream_new_tokens();
@@ -262,21 +280,42 @@ public:
         }
 
         m_sampler.clear_request_info(group->get_request_id());
-        if (m_in_chat) {
-            m_chat_kv_used = static_cast<size_t>(pos);
-        }
         return results;
     }
 
     DecodedResults generate(const std::string& prompt,
                             OptionalGenerationConfig generation_config,
                             StreamerVariant streamer) {
-        std::string text = prompt;
-        if (m_in_chat) {
-            m_history.push_back({{"role", "user"}, {"content", prompt}});
-            text = m_tokenizer.apply_chat_template(m_history, true);
+        if (!m_in_chat) {
+            return generate_text(prompt, true, generation_config, std::move(streamer));
         }
-        const auto ids = m_tokenizer.encode(text, ov::genai::add_special_tokens(!m_in_chat));
+        m_history.push_back({{"role", "user"}, {"content", prompt}});
+        auto decoded = generate_text(m_tokenizer.apply_chat_template(m_history, true), false, generation_config,
+                                     std::move(streamer));
+        if (!decoded.texts.empty()) {
+            m_history.push_back({{"role", "assistant"}, {"content", decoded.texts.front()}});
+        }
+        return decoded;
+    }
+
+    /// Same contract as LLMPipeline::generate(ChatHistory): the history -- including any tools /
+    /// extra_context set on it -- is rendered by the model's chat template. Repeated calls with a
+    /// growing history only prefill the new suffix (see the prefix reuse in generate(ids)).
+    DecodedResults generate(const ChatHistory& history,
+                            OptionalGenerationConfig generation_config,
+                            StreamerVariant streamer) {
+        const GenerationConfig config = generation_config.value_or(m_config);
+        OPENVINO_ASSERT(config.apply_chat_template, "[GGML] chat template must be applied when using ChatHistory");
+        OPENVINO_ASSERT(!m_tokenizer.get_chat_template().empty(), "[GGML] the model has no chat template");
+        return generate_text(m_tokenizer.apply_chat_template(history, true), false, generation_config,
+                             std::move(streamer));
+    }
+
+    DecodedResults generate_text(const std::string& text,
+                                 bool add_special_tokens,
+                                 OptionalGenerationConfig generation_config,
+                                 StreamerVariant streamer) {
+        const auto ids = m_tokenizer.encode(text, ov::genai::add_special_tokens(add_special_tokens));
         const auto* p = ids.input_ids.data<int64_t>();
         std::vector<int64_t> input_ids(p, p + ids.input_ids.get_size());
 
@@ -286,15 +325,11 @@ public:
             decoded.texts.push_back(m_tokenizer.decode(toks));
         }
         decoded.scores = encoded.scores;
-        if (m_in_chat && !decoded.texts.empty()) {
-            m_history.push_back({{"role", "assistant"}, {"content", decoded.texts.front()}});
-        }
         return decoded;
     }
 
     void start_chat(const std::string& system_message) {
         m_in_chat = true;
-        m_chat_kv_used = 0;
         m_history.clear();
         if (!system_message.empty()) {
             m_history.push_back({{"role", "system"}, {"content", system_message}});
@@ -303,7 +338,6 @@ public:
 
     void finish_chat() {
         m_in_chat = false;
-        m_chat_kv_used = 0;
         m_history.clear();
     }
 
@@ -318,10 +352,11 @@ private:
     Sampler m_sampler;
     std::vector<float> m_logits;
     size_t m_n_kv = 0;
-    // Chat mode keeps the KV cache across turns, so the next prompt starts after what is
-    // already written rather than at slot 0.
+    size_t m_scratch_slots = 0;  // top slots reserved for prefill padding rows
+    // Tokens whose K/V currently occupy slots 0..size()-1. generate() reuses the longest common
+    // prefix with its prompt instead of recomputing it; whatever lies beyond is stale and masked.
+    std::vector<int64_t> m_kv_tokens;
     bool m_in_chat = false;
-    size_t m_chat_kv_used = 0;
     ChatHistory m_history;
 };
 
@@ -348,10 +383,24 @@ GgmlPipeline::GgmlPipeline(const std::vector<std::pair<size_t, std::filesystem::
 
 GgmlPipeline::~GgmlPipeline() = default;
 
+// Parsers (generation_config.parsers, TextParserStreamer) run through the same wrapper as
+// LLMPipeline, with the effective config -- so parsers set via set_generation_config apply too.
 DecodedResults GgmlPipeline::generate(const std::string& prompt,
                                       OptionalGenerationConfig generation_config,
                                       StreamerVariant streamer) {
-    return m_impl->generate(prompt, generation_config, std::move(streamer));
+    const OptionalGenerationConfig effective = generation_config.value_or(m_impl->m_config);
+    return utils::run_generate_with_parsers(effective, streamer, [&]() -> DecodedResults {
+        return m_impl->generate(prompt, generation_config, streamer);
+    });
+}
+
+DecodedResults GgmlPipeline::generate(const ChatHistory& history,
+                                      OptionalGenerationConfig generation_config,
+                                      StreamerVariant streamer) {
+    const OptionalGenerationConfig effective = generation_config.value_or(m_impl->m_config);
+    return utils::run_generate_with_parsers(effective, streamer, [&]() -> DecodedResults {
+        return m_impl->generate(history, generation_config, streamer);
+    });
 }
 
 EncodedResults GgmlPipeline::generate(const std::vector<int64_t>& input_ids,

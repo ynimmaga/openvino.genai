@@ -34,6 +34,9 @@ namespace genai {
  * The graph is a cgraph artifact dumped offline from llama.cpp and replayed verbatim. llama.cpp
  * is a build-time tool and is absent at runtime.
  *
+ * Parsers (GenerationConfig::parsers, TextParserStreamer) are applied as in LLMPipeline, so
+ * reasoning / tool-call extraction lands in DecodedResults::parsed.
+ *
  * LIMITATIONS. Context length is fixed when the artifact was dumped. Continuous batching, beam
  * search and LoRA are not supported.
  */
@@ -74,6 +77,15 @@ public:
     ~GgmlPipeline();
 
     DecodedResults generate(const std::string& prompt,
+                            OptionalGenerationConfig generation_config = std::nullopt,
+                            StreamerVariant streamer = std::monostate{});
+
+    /// Render `history` (messages plus any tools / extra_context set on it) with the model's chat
+    /// template and generate, as LLMPipeline::generate(ChatHistory). Tool calls in the output are
+    /// extracted by generation_config.parsers (e.g. Llama3JsonToolParser) into DecodedResults::parsed.
+    /// K/V for the part of the history already processed is reused, so a growing history only
+    /// prefills its new suffix.
+    DecodedResults generate(const ChatHistory& history,
                             OptionalGenerationConfig generation_config = std::nullopt,
                             StreamerVariant streamer = std::monostate{});
 
