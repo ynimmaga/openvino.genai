@@ -122,6 +122,17 @@ InputsEmbedder::IInputsEmbedder::IInputsEmbedder(
     m_tokenizer(tokenizer),
     m_pruning_processor(std::make_shared<VisionTokenPruningProcessor>(device)) { }
 
+InputsEmbedder::IInputsEmbedder::IInputsEmbedder(
+        const VLMConfig& vlm_config,
+        const CompiledModelsMap& compiled_models,
+        const Tokenizer& tokenizer,
+        const std::filesystem::path& config_dir_path) :
+    m_vlm_config{vlm_config},
+    m_vision_encoder(VisionEncoder::create(compiled_models, config_dir_path, m_vlm_config.model_type)),
+    m_embedding(EmbeddingsModel::create(compiled_models.at("text_embeddings"), m_vlm_config.scale_emb)),
+    m_tokenizer(tokenizer),
+    m_pruning_processor(std::make_shared<VisionTokenPruningProcessor>("CPU")) { }
+
 ov::Tensor InputsEmbedder::IInputsEmbedder::apply_chat_template_tokenize(const std::string& prompt, ov::genai::VLMPerfMetrics& metrics) {
     bool add_special_tokens = m_add_special_tokens_is_set ? m_add_special_tokens : !(m_is_chat_conversation || m_apply_chat_template);
     ManualTimer encode_timer("Encode");
@@ -378,6 +389,19 @@ InputsEmbedder::InputsEmbedder(const std::filesystem::path& model_dir,
         m_impl = std::make_shared<InputsEmbedderMuseGlimmer>(vlm_config, model_dir, tokenizer, device, device_config);
     } else {
         OPENVINO_THROW("Unsupported model type in VLM InputsEmbedder class. Please, create feature request on new model support");
+    }
+}
+
+InputsEmbedder::InputsEmbedder(const CompiledModelsMap& compiled_models,
+                               const Tokenizer& tokenizer,
+                               const std::filesystem::path& config_dir_path) {
+    auto vlm_config = utils::from_config_json_if_exists<VLMConfig>(config_dir_path, "config.json");
+    if (vlm_config.model_type == VLMModelType::INTERNVL_CHAT) {
+        m_impl = std::make_shared<InputsEmbedderInternVLChat>(vlm_config, compiled_models, tokenizer, config_dir_path);
+    } else if (vlm_config.model_type == VLMModelType::LLAVA) {
+        m_impl = std::make_shared<InputsEmbedderLLaVA>(vlm_config, compiled_models, tokenizer, config_dir_path);
+    } else {
+        OPENVINO_THROW("Constructing the VLM InputsEmbedder from compiled models is not supported for this model type");
     }
 }
 

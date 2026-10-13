@@ -260,6 +260,20 @@ public:
         const ov::genai::GenerationConfig& generation_config = {}
     );
 
+    /// @brief Construct a pipeline from already compiled models, e.g. ones compiled for a device that
+    /// does not take an ov::Model.
+    /// @param compiled_models A map with the keys of ModelsMap ("vision_embeddings", "text_embeddings",
+    /// "language"). The language model must be stateful, holding a plain KV cache.
+    /// @param tokenizer A tokenizer.
+    /// @param config_dir_path A path to directory containing config.json and the image processor config.
+    /// @param generation_config Optional generation configuration for the pipeline.
+    VLMPipeline(
+        const CompiledModelsMap& compiled_models,
+        const Tokenizer& tokenizer,
+        const std::filesystem::path& config_dir_path,
+        const ov::genai::GenerationConfig& generation_config = {}
+    );
+
     /// @brief Construct a pipeline from a folder containing tokenizer
     /// and model IRs. Accepts arbitrary list of optional properties.
     /// @param models_path A folder to read tokenizer and model IRs.

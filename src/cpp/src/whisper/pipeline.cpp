@@ -15,6 +15,7 @@
 #include "whisper/feature_extractor.hpp"
 #include "whisper/models.hpp"
 #include "whisper/models/decoder.hpp"
+#include "whisper/models/statefull_decoder.hpp"
 #include "whisper/pipeline_base.hpp"
 #include "whisper/pipeline_static.hpp"
 #include "whisper/whisper.hpp"
@@ -121,6 +122,26 @@ public:
         m_sampler.set_seed(m_generation_config.rng_seed);
     }
 
+    WhisperPipelineStatefulImpl(const ov::CompiledModel& encoder,
+                                const ov::CompiledModel& decoder,
+                                const std::filesystem::path& config_dir,
+                                const ov::AnyMap& properties)
+        : WhisperPipelineImplBase{config_dir},
+          m_sampler(m_tokenizer) {
+        ov::AnyMap properties_copy = properties;
+        m_generation_config.update_generation_config(properties_copy);
+        ov::CompiledModel encoder_model = encoder;
+        m_encoder = init_model(encoder_model);
+        m_decoder = std::make_shared<WhisperStatefullDecoder>(decoder);
+
+        // If eos_token_id was not provided, take value
+        if (m_generation_config.eos_token_id == -1) {
+            m_generation_config.set_eos_token_id(m_tokenizer.get_eos_token_id());
+        }
+
+        m_sampler.set_seed(m_generation_config.rng_seed);
+    }
+
     WhisperDecodedResults generate(const RawSpeechInput& raw_speech_input,
                                    OptionalWhisperGenerationConfig generation_config,
                                    const std::shared_ptr<StreamerBase> streamer) override {
@@ -203,6 +224,16 @@ ov::genai::WhisperPipeline::WhisperPipeline(const std::filesystem::path& models_
     } else {
         m_impl = std::make_unique<WhisperPipelineStatefulImpl>(models_path, device, properties);
     }
+    auto stop_time = std::chrono::steady_clock::now();
+    m_impl->m_load_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(stop_time - start_time).count();
+}
+
+ov::genai::WhisperPipeline::WhisperPipeline(const ov::CompiledModel& encoder,
+                                            const ov::CompiledModel& decoder,
+                                            const std::filesystem::path& config_dir,
+                                            const ov::AnyMap& properties) {
+    auto start_time = std::chrono::steady_clock::now();
+    m_impl = std::make_unique<WhisperPipelineStatefulImpl>(encoder, decoder, config_dir, properties);
     auto stop_time = std::chrono::steady_clock::now();
     m_impl->m_load_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(stop_time - start_time).count();
 }

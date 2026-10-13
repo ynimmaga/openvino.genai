@@ -95,12 +95,16 @@ private:
         const std::shared_ptr<ov::Model>& language_model,
         const utils::KVAxesPosition& kv_pos
     ) {
+        finalize_initialization(utils::get_cache_types(*language_model), kv_pos.seq_len);
+    }
+
+    void finalize_initialization(utils::CacheTypes cache_types, size_t seq_length_axis) {
         m_tokenizer = m_inputs_embedder->get_tokenizer();
         m_embedding = m_inputs_embedder->get_embedding_model();
 
         utils::CacheState& cache_state = m_inputs_embedder->get_cache_state();
-        cache_state.set_cache_types(utils::get_cache_types(*language_model));
-        cache_state.seq_length_axis = kv_pos.seq_len;
+        cache_state.set_cache_types(cache_types);
+        cache_state.seq_length_axis = seq_length_axis;
 
         if (m_generation_config.eos_token_id == -1) {
             m_generation_config.set_eos_token_id(m_tokenizer.get_eos_token_id());
@@ -302,6 +306,28 @@ public:
             utils::from_config_json_if_exists<VLMConfig>(config_dir_path, "config.json")
         } {
         initialize_from_model_and_map(language_model, models_map, tokenizer, config_dir_path, device, properties);
+    }
+
+    VLMPipelineImpl(
+        const CompiledModelsMap& compiled_models,
+        const Tokenizer& tokenizer,
+        const std::filesystem::path& config_dir_path,
+        const GenerationConfig& generation_config
+    ) :
+        m_generation_config{generation_config},
+        m_vlm_config{
+            utils::from_config_json_if_exists<VLMConfig>(config_dir_path, "config.json")
+        } {
+        m_inputs_embedder = std::make_shared<InputsEmbedder>(compiled_models, tokenizer, config_dir_path);
+        auto language = compiled_models.find("language");
+        OPENVINO_ASSERT(language != compiled_models.end(), "Compiled models map has no 'language' model");
+        m_language = ov::CompiledModel(language->second).create_infer_request();
+        m_language.get_tensor("attention_mask").set_shape({1, 0});
+        // A compiled language model carries no ov::Model to inspect: it must hold a plain KV cache
+        // as [batch, heads, seq_len, head_size] state, the layout trimming relies on.
+        utils::CacheTypes cache_types;
+        cache_types.add_kvcache();
+        finalize_initialization(cache_types, 2);
     }
 
     VLMDecodedResults generate(
@@ -1026,6 +1052,18 @@ VLMPipeline::VLMPipeline(
     }
 
     utils::log_attention_backend(m_pimpl->get_attention_backend());
+    auto stop_time = std::chrono::steady_clock::now();
+    m_pimpl->set_load_time(std::chrono::duration_cast<std::chrono::milliseconds>(stop_time - start_time).count());
+}
+
+VLMPipeline::VLMPipeline(
+    const CompiledModelsMap& compiled_models,
+    const Tokenizer& tokenizer,
+    const std::filesystem::path& config_dir_path,
+    const GenerationConfig& generation_config
+) {
+    auto start_time = std::chrono::steady_clock::now();
+    m_pimpl = std::make_shared<VLMPipelineImpl>(compiled_models, tokenizer, config_dir_path, generation_config);
     auto stop_time = std::chrono::steady_clock::now();
     m_pimpl->set_load_time(std::chrono::duration_cast<std::chrono::milliseconds>(stop_time - start_time).count());
 }

@@ -17,7 +17,7 @@ StatefulLLMPipeline::StatefulLLMPipeline(
     const ov::genai::Tokenizer& tokenizer,
     OptionalGenerationConfig generation_config)
     : LLMPipelineImplBase(tokenizer, generation_config.value_or(GenerationConfig())),
-    m_model_runner(request) {
+    m_model_runner(request), m_sampler(m_tokenizer) {
     auto compiled_model = m_model_runner.get_compiled_model();
     auto execution_devices = compiled_model.get_property(ov::execution_devices);
     if (execution_devices[0].find("NPU") != std::string::npos) {
@@ -25,6 +25,12 @@ StatefulLLMPipeline::StatefulLLMPipeline(
         m_is_npu = true;
         m_max_prompt_len = compiled_model.get_property("NPUW_LLM_MAX_PROMPT_LEN").as<uint32_t>();
     }
+
+    // If eos_token_id was not provided, take value
+    if (m_generation_config.eos_token_id == -1)
+        m_generation_config.set_eos_token_id(m_tokenizer.get_eos_token_id());
+
+    m_sampler.set_seed(m_generation_config.rng_seed);
 }
 
 StatefulLLMPipeline::StatefulLLMPipeline(

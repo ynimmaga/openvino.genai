@@ -157,6 +157,30 @@ VisionEncoder::Ptr VisionEncoder::create(const std::filesystem::path& model_dir,
     }
 }
 
+VisionEncoder::VisionEncoder(const CompiledModelsMap& compiled_models, const std::filesystem::path& config_dir_path) {
+    auto it = compiled_models.find("vision_embeddings");
+    OPENVINO_ASSERT(it != compiled_models.end(), "Compiled models map has no 'vision_embeddings' model");
+    ov::CompiledModel compiled_model = it->second;
+    m_ireq_queue_vision_encoder = std::make_unique<CircularBufferQueue<ov::InferRequest>>(
+        compiled_model.get_property(ov::optimal_number_of_infer_requests),
+        [&compiled_model]() -> ov::InferRequest {
+            return compiled_model.create_infer_request();
+        });
+    resolve_processor_configs(config_dir_path);
+}
+
+VisionEncoder::Ptr VisionEncoder::create(
+    const CompiledModelsMap& compiled_models,
+    const std::filesystem::path& config_dir_path,
+    const VLMModelType model_type) {
+    if (model_type == VLMModelType::INTERNVL_CHAT) {
+        return std::make_shared<VisionEncoderInternVLChat>(compiled_models, config_dir_path);
+    } else if (model_type == VLMModelType::LLAVA) {
+        return std::make_shared<VisionEncoderLLaVA>(compiled_models, config_dir_path);
+    }
+    OPENVINO_THROW("Constructing the VLM VisionEncoder from compiled models is not supported for this model type");
+}
+
 VisionEncoder::Ptr VisionEncoder::create(
     const ModelsMap& models_map,
     const std::filesystem::path& config_dir_path,

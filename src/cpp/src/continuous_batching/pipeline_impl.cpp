@@ -92,6 +92,32 @@ void prepare_model_for_paged_attention(const std::shared_ptr<ov::Model>& model,
 }
 
 ContinuousBatchingPipeline::ContinuousBatchingImpl::ContinuousBatchingImpl(
+    const ov::CompiledModel& compiled_model,
+    const Tokenizer& tokenizer,
+    const SchedulerConfig& scheduler_config,
+    const ov::genai::GenerationConfig& generation_config) {
+    m_tokenizer = tokenizer;
+    m_generation_config = generation_config;
+    m_device = compiled_model.get_property(ov::execution_devices).at(0);
+
+    // A device with a fixed-size KV cache reports its capacity; the block pool must not outgrow it,
+    // which dynamic cache growth (num_kv_blocks = 0) otherwise would.
+    SchedulerConfig config = scheduler_config;
+    const auto supported = compiled_model.get_property(ov::supported_properties);
+    if (std::find(supported.begin(), supported.end(), "KV_CACHE_MAX_BLOCKS") != supported.end()) {
+        const size_t max_blocks = compiled_model.get_property("KV_CACHE_MAX_BLOCKS").as<size_t>();
+        OPENVINO_ASSERT(config.num_kv_blocks <= max_blocks,
+                        "num_kv_blocks (", config.num_kv_blocks, ") exceeds the model's KV cache capacity of ",
+                        max_blocks, " blocks");
+        if (config.num_kv_blocks == 0) {
+            config.num_kv_blocks = max_blocks;
+            config.cache_size = 0;
+        }
+    }
+    initialize_from_compiled_model(compiled_model, config, std::thread::hardware_concurrency());
+}
+
+ContinuousBatchingPipeline::ContinuousBatchingImpl::ContinuousBatchingImpl(
     const std::shared_ptr<ov::Model>& model,
     const Tokenizer& tokenizer,
     const SchedulerConfig& scheduler_config,
@@ -180,6 +206,15 @@ void ContinuousBatchingPipeline::ContinuousBatchingImpl::initialize_pipeline(std
     }
 
     ov::CompiledModel compiled_model = utils::singleton_core().compile_model(model, device, *filtered_properties);
+    initialize_from_compiled_model(compiled_model, scheduler_config, sampler_num_threads);
+}
+
+void ContinuousBatchingPipeline::ContinuousBatchingImpl::initialize_from_compiled_model(ov::CompiledModel compiled_model,
+                                                                                        const SchedulerConfig& scheduler_config,
+                                                                                        size_t sampler_num_threads) {
+    SchedulerConfig normalized_config = scheduler_config;
+    normalized_config.validate();
+
     std::vector<std::string> execution_devices = compiled_model.get_property(ov::execution_devices);
     const bool all_gpu_device =
         std::all_of(execution_devices.begin(), execution_devices.end(), [&](const std::string& device) {

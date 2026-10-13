@@ -44,6 +44,17 @@ public:
         }
 
     ContinuousBatchingAdapter(
+        const ov::CompiledModel& compiled_model,
+        const Tokenizer& tokenizer,
+        const SchedulerConfig& scheduler_config,
+        const ov::genai::GenerationConfig& generation_config
+        ): LLMPipelineImplBase{tokenizer, GenerationConfig()} {
+        set_attention_backend(PA_BACKEND);
+        m_impl = std::make_unique<ContinuousBatchingPipeline>(compiled_model, tokenizer, scheduler_config, generation_config);
+        m_generation_config = m_impl->get_config();
+    }
+
+    ContinuousBatchingAdapter(
         const std::shared_ptr<ov::Model>& model,
         const Tokenizer& tokenizer,
         const SchedulerConfig& scheduler_config,

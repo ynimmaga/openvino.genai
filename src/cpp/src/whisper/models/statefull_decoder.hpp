@@ -16,6 +16,8 @@ public:
                             const ov::PartialShape& lhs_shape,
                             const bool decompose_cross_attention_spda_ops);
 
+    explicit WhisperStatefullDecoder(ov::CompiledModel compiled_model);
+
     void start_async(const Tensor& encoder_hidden_state, const Tensor& input_ids, const Tensor& beam_idx) override;
 
     Tensor wait() override;

@@ -49,6 +49,10 @@ public:
                    const std::string& device,
                    const ov::AnyMap device_config);
 
+    InputsEmbedder(const CompiledModelsMap& compiled_models,
+                   const Tokenizer& tokenizer,
+                   const std::filesystem::path& config_dir_path);
+
     // compute input embedding for prompt and multiple images
     ov::Tensor get_inputs_embeds(const std::string& prompt, const std::vector<ov::genai::EncodedImage>& images, ov::genai::VLMPerfMetrics& metrics, bool recalculate_merged_embeddings = true, const std::vector<size_t>& image_sequence = {});
 
@@ -283,6 +287,12 @@ private:
             const std::filesystem::path& config_dir_path,
             const std::string& device,
             const ov::AnyMap device_config);
+
+        IInputsEmbedder(
+            const VLMConfig& vlm_config,
+            const CompiledModelsMap& compiled_models,
+            const Tokenizer& tokenizer,
+            const std::filesystem::path& config_dir_path);
 
         virtual ov::Tensor apply_chat_template_tokenize(const std::string& prompt, ov::genai::VLMPerfMetrics& metrics);
 

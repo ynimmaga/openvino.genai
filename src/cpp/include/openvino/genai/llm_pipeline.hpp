@@ -172,6 +172,22 @@ public:
     );
 
     /**
+    * @brief Constructs a paged attention (continuous batching) LLMPipeline from a model already compiled
+    * with the paged attention interface, e.g. by a device that does not take an ov::Model
+    *
+    * @param compiled_model compiled model with key_cache.N / value_cache.N, block_indices, ... inputs
+    * @param tokenizer initialized Tokenizer
+    * @param scheduler_config scheduler configuration (KV cache size, batching limits)
+    * @param generation_config optional generation_config, be default will be initialized for greedy decoding
+    */
+    LLMPipeline(
+        const ov::CompiledModel& compiled_model,
+        const ov::genai::Tokenizer& tokenizer,
+        const SchedulerConfig& scheduler_config,
+        OptionalGenerationConfig generation_config = std::nullopt
+    );
+
+    /**
     * @brief Constructs a LLMPipeline when ov::genai::Tokenizer is initialized manually using file from the different dirs.
     *
     * @param models_path Path to the dir with model, tokenizer .xml/.bin files, and generation_configs.json

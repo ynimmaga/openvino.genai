@@ -1,10 +1,12 @@
 // Copyright (C) 2023-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 
 #include "openvino/runtime/core.hpp"
+#include "openvino/runtime/remote_tensor.hpp"
 #include "openvino/core/preprocess/pre_post_process.hpp"
 #include "openvino/op/multiply.hpp"
 #include "openvino/op/constant.hpp"
@@ -70,6 +72,14 @@ EmbeddingsModel::EmbeddingsModel(const std::string& model,
     m_embeddings_requests_queue = init(compiled_model);
 }
 
+EmbeddingsModel::EmbeddingsModel(const ov::CompiledModel& compiled_model, const float scale_emb)
+    // scale_emb is otherwise merged into the model before compilation, which a compiled model is
+    // past, so it is applied to the output instead.
+    : m_output_scale(scale_emb) {
+    ov::CompiledModel compiled = compiled_model;
+    m_embeddings_requests_queue = init(compiled);
+}
+
 std::unique_ptr<CircularBufferQueue<EmbeddingsRequest>>& EmbeddingsModel::get_request_queue() {
     return this->m_embeddings_requests_queue;
 }
@@ -83,7 +93,14 @@ ov::Tensor EmbeddingsModel::infer(EmbeddingsRequest& req, const ov::Tensor& inpu
         req.ireq.set_output_tensor(req.cpu_tensor);
     }
     req.ireq.infer();
-    return req.ireq.get_output_tensor();
+    ov::Tensor embeds = req.ireq.get_output_tensor();
+    if (m_output_scale != 1.0f) {
+        OPENVINO_ASSERT(!embeds.is<ov::RemoteTensor>(),
+                        "scale_emb of a precompiled text embeddings model can only be applied to a host tensor");
+        float* data = embeds.data<float>();
+        std::transform(data, data + embeds.get_size(), data, [this](float v) { return v * m_output_scale; });
+    }
+    return embeds;
 }
 
 void EmbeddingsModel::merge_postprocess(std::shared_ptr<ov::Model> model, float scale_emb) const {

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "openvino/core/any.hpp"
+#include "openvino/runtime/compiled_model.hpp"
 #include "openvino/genai/llm_pipeline.hpp"
 #include "openvino/genai/whisper_generation_config.hpp"
 
@@ -153,6 +154,20 @@ public:
               typename std::enable_if<ov::util::StringAny<Properties...>::value, bool>::type = true>
     WhisperPipeline(const std::filesystem::path& models_path, const std::string& device, Properties&&... properties)
         : WhisperPipeline(models_path, device, ov::AnyMap{std::forward<Properties>(properties)...}) {}
+
+    /**
+     * @brief Constructs a WhisperPipeline from already compiled encoder and decoder models, e.g. ones
+     * compiled for a device that does not take an ov::Model.
+     *
+     * @param encoder compiled encoder: input_features -> last_hidden_state
+     * @param decoder compiled stateful decoder: input_ids, encoder_hidden_states, beam_idx[, cache_position] -> logits
+     * @param config_dir dir with tokenizers, config.json, generation_config.json and preprocessor_config.json
+     * @param properties optional generation config properties
+     */
+    WhisperPipeline(const ov::CompiledModel& encoder,
+                    const ov::CompiledModel& decoder,
+                    const std::filesystem::path& config_dir,
+                    const ov::AnyMap& properties = {});
 
     ~WhisperPipeline();
 

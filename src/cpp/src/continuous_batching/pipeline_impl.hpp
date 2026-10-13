@@ -65,6 +65,10 @@ protected:
                              const std::string& device,
                              const ov::AnyMap& plugin_config);
 
+    void initialize_from_compiled_model(ov::CompiledModel compiled_model,
+                                        const SchedulerConfig& scheduler_config,
+                                        size_t sampler_num_threads);
+
     /**
      * Pulls requests from awaiting queue to running queue
      * Should be called within each call of step()
@@ -123,6 +127,13 @@ public:
                            const ov::AnyMap& properties,
                            const ov::genai::GenerationConfig& generation_config,
                            bool is_validation_mode_enabled = false);
+
+    /// A model already compiled with the paged attention interface (key_cache.N / value_cache.N,
+    /// block_indices, ...); no ov::Model transformations are applied.
+    ContinuousBatchingImpl(const ov::CompiledModel& compiled_model,
+                           const Tokenizer& tokenizer,
+                           const SchedulerConfig& scheduler_config,
+                           const ov::genai::GenerationConfig& generation_config);
 
     ContinuousBatchingImpl(const std::shared_ptr<ov::Model>& model,
                            std::shared_ptr<InputsEmbedder> inputs_embedder,

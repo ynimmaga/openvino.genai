@@ -3,6 +3,7 @@
 
 #include "statefull_decoder.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include "openvino/op/softmax.hpp"
@@ -55,6 +56,20 @@ WhisperStatefullDecoder::WhisperStatefullDecoder(const std::filesystem::path& mo
 
     utils::print_compiled_model_properties(compiled_model, "whisper decoder model");
     m_request = compiled_model.create_infer_request();
+}
+
+WhisperStatefullDecoder::WhisperStatefullDecoder(ov::CompiledModel compiled_model)
+    : m_request(compiled_model.create_infer_request()) {
+    const auto& inputs = compiled_model.inputs();
+    m_has_cache_position = std::any_of(inputs.begin(), inputs.end(), [](const ov::Output<const ov::Node>& input) {
+        return input.get_names().count("cache_position") > 0;
+    });
+    // Word timestamps read cross-attention scores, which a precompiled decoder may expose directly.
+    const auto& outputs = compiled_model.outputs();
+    m_decompose_cross_attention_spda_ops =
+        std::any_of(outputs.begin(), outputs.end(), [](const ov::Output<const ov::Node>& output) {
+            return output.get_names().count("cross_attention_qk_scaled_scores_0") > 0;
+        });
 }
 
 void WhisperStatefullDecoder::start_async(const Tensor& encoder_hidden_state,

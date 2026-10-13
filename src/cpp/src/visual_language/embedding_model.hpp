@@ -44,6 +44,8 @@ public:
                     const std::string& device,
                     const ov::AnyMap& properties);
 
+    EmbeddingsModel(const ov::CompiledModel& compiled_model, const float scale_emb);
+
     EmbeddingsModel() = default;
 
     static Ptr create(const std::filesystem::path& model_dir,
@@ -61,6 +63,10 @@ public:
         return std::make_shared<EmbeddingsModel>(model, weights, scale_emb, device, properties);
     }
 
+    static Ptr create(const ov::CompiledModel& compiled_model, const float scale_emb) {
+        return std::make_shared<EmbeddingsModel>(compiled_model, scale_emb);
+    }
+
     // We have getter for the request queue, so we can reserve request outside of infer scope
     // Tensor produced by infer is stored in the request and used further in the pipeline, so we can't free it right after infer call
     std::unique_ptr<CircularBufferQueue<EmbeddingsRequest>>& get_request_queue();
@@ -69,6 +75,8 @@ private:
     void merge_postprocess(std::shared_ptr<ov::Model> model, float scale_emb) const;
 
     std::unique_ptr<CircularBufferQueue<EmbeddingsRequest>> m_embeddings_requests_queue;
+    // Applied to the output when scale_emb could not be merged into the model (precompiled model).
+    float m_output_scale = 1.0f;
 };
 
 } // namespace genai

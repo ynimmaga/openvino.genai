@@ -121,6 +121,13 @@ public:
         const std::string& device,
         const ov::AnyMap properties = {});
 
+    /// @brief Constructs the encoder from already compiled models (model types whose encoder runs
+    /// the "vision_embeddings" model only).
+    static VisionEncoder::Ptr create(
+        const CompiledModelsMap& compiled_models,
+        const std::filesystem::path& config_dir_path,
+        const VLMModelType model_type);
+
     /// @brief Compute embeddings of an image given
     /// ProcessorConfig members.
     /// @param image An image to infer embeddings for. Image shape must be
@@ -174,6 +181,8 @@ public:
         const std::filesystem::path& config_dir_path,
         const std::string& device,
         const ov::AnyMap properties);
+
+    VisionEncoder(const CompiledModelsMap& compiled_models, const std::filesystem::path& config_dir_path);
 };
 
 } // namespace ov::genai

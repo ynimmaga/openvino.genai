@@ -227,6 +227,13 @@ InputsEmbedderInternVLChat::InputsEmbedderInternVLChat(
     const ov::AnyMap device_config) :
     IInputsEmbedder(vlm_config, models_map, tokenizer, config_dir_path, device, device_config) { }
 
+InputsEmbedderInternVLChat::InputsEmbedderInternVLChat(
+    const VLMConfig& vlm_config,
+    const CompiledModelsMap& compiled_models,
+    const Tokenizer& tokenizer,
+    const std::filesystem::path& config_dir_path) :
+    IInputsEmbedder(vlm_config, compiled_models, tokenizer, config_dir_path) { }
+
 
 NormalizedPrompt InputsEmbedderInternVLChat::normalize_prompt(const std::string& prompt, size_t base_id, const std::vector<EncodedImage>& images) const {
     auto [unified_prompt, images_sequence] = normalize(prompt, NATIVE_TAG, NATIVE_TAG + '\n', base_id, images.size());

@@ -195,6 +195,16 @@ private:
                                const std::filesystem::path& model_config_dir = {});
 
 public:
+    /**
+     * @brief Constructs a pipeline from a model already compiled with the paged attention interface
+     * (key_cache.N / value_cache.N, block_indices, past_lens, ..., logits), e.g. by a device that
+     * does not take an ov::Model. Speculative decoding, prompt lookup and LoRA are not available.
+     */
+    ContinuousBatchingPipeline(const ov::CompiledModel& compiled_model,
+                               const ov::genai::Tokenizer& tokenizer,
+                               const SchedulerConfig& scheduler_config,
+                               const ov::genai::GenerationConfig& generation_config = {});
+
     ContinuousBatchingPipeline(const std::filesystem::path& models_path,
                                const SchedulerConfig& scheduler_config,
                                const std::string& device,
