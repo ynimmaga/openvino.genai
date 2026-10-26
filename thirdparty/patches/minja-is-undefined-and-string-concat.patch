@@ -1,0 +1,36 @@
+diff --git a/include/minja/minja.hpp b/include/minja/minja.hpp
+index 41793bc..1533fc3 100644
+--- a/include/minja/minja.hpp
++++ b/include/minja/minja.hpp
+@@ -1347,6 +1347,7 @@ public:
+               if (name == "iterable") return l.is_iterable();
+               if (name == "sequence") return l.is_array();
+               if (name == "defined") return !l.is_null();
++              if (name == "undefined") return l.is_null();
+               if (name == "true") return l.to_bool();
+               if (name == "false") return !l.to_bool();
+               throw std::runtime_error("Unknown type for 'is' operator: " + name);
+@@ -1756,9 +1757,20 @@ private:
+ 
+       consumeSpaces();
+       if (it == end) return nullptr;
+-      if (*it == '"') return doParse('"');
+-      if (*it == '\'') return doParse('\'');
+-      return nullptr;
++      std::unique_ptr<std::string> result;
++      if (*it == '"') result = doParse('"');
++      else if (*it == '\'') result = doParse('\'');
++      if (!result) return nullptr;
++      // Jinja joins adjacent string literals: "a " "b" is "a b"
++      for (;;) {
++        const auto saved = it;
++        consumeSpaces();
++        std::unique_ptr<std::string> next;
++        if (it != end && (*it == '"' || *it == '\'')) next = doParse(*it);
++        if (!next) { it = saved; break; }
++        *result += *next;
++      }
++      return result;
+     }
+ 
+     json parseNumber(CharIterator& it, const CharIterator& end) {

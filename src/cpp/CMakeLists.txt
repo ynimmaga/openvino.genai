@@ -114,6 +114,11 @@ if(NOT TARGET minja)
         minja
         GIT_REPOSITORY https://github.com/google/minja.git
         GIT_TAG 3e4c61c616eda133cfb1e440fc7a14bf1729bbee
+        # minja parses a call only at the very end of an expression, so `macro(x).startswith(y)` fails
+        # (Nanbeige's template). The first patch lets calls take part in the postfix chain. The second adds
+        # the `is undefined` test (Qwen 3.8) and Jinja's joining of adjacent string literals (Gemma 4 QAT).
+        PATCH_COMMAND ${CMAKE_COMMAND} "-DPATCH=${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/patches/minja-postfix-after-call.patch|${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/patches/minja-is-undefined-and-string-concat.patch"
+                      -P ${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/patches/apply_patch.cmake
     )
 
     FetchContent_GetProperties(minja)

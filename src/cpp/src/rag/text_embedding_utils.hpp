@@ -30,6 +30,13 @@ void reshape_model(std::shared_ptr<ov::Model>& model,
 std::shared_ptr<ov::Model> apply_postprocessing(std::shared_ptr<ov::Model> model,
                                                 const TextEmbeddingPipeline::Config& config);
 
+/// Pooling + normalization as a model of its own, for backends whose compiled model returns per-token
+/// hidden states and cannot take the post-processing ops appended to it.
+std::shared_ptr<ov::Model> create_post_model(const ov::element::Type& hidden_type,
+                                             const ov::Dimension& hidden_size,
+                                             const std::string& name,
+                                             const TextEmbeddingPipeline::Config& config);
+
 std::shared_ptr<ov::Model> create_post_model(std::shared_ptr<ov::Model> model,
                                              const TextEmbeddingPipeline::Config& config);
 

@@ -1,0 +1,30 @@
+diff --git a/src/tokenizers_factory.cpp b/src/tokenizers_factory.cpp
+index 2a49096e..54428f21 100644
+--- a/src/tokenizers_factory.cpp
++++ b/src/tokenizers_factory.cpp
+@@ -58,6 +58,25 @@ ov::OutputVector create_tokenizer_node(const std::string& op_type,
+     } else if (op_type == "RegexNormalization") {
+         auto global_replace = get_attribute_value<bool>(attributes, "global_replace", true);
+         return std::make_shared<RegexNormalization>(inputs, global_replace)->outputs();
++    } else if (op_type == "CharsMapNormalization") {
++        // Unicode normalization / case folding without a SentencePiece charsmap (BERT-style normalizers)
++        auto remove_extra_whitespaces = get_attribute_value<bool>(attributes, "remove_extra_whitespaces", false);
++        auto case_fold = get_attribute_value<bool>(attributes, "case_fold", false);
++        auto normalization_form = get_attribute_value<std::string>(attributes, "normalization_form", "");
++        return std::make_shared<CharsMapNormalization>(inputs,
++                                                       std::shared_ptr<sentencepiece::normalizer::Normalizer>{},
++                                                       std::shared_ptr<sentencepiece::NormalizerSpec>{},
++                                                       false,
++                                                       remove_extra_whitespaces,
++                                                       false,
++                                                       case_fold,
++                                                       normalization_form,
++                                                       false)
++            ->outputs();
++    } else if (op_type == "WordpieceTokenizer") {
++        auto suffix_indicator = get_attribute_value<std::string>(attributes, "suffix_indicator", "##");
++        auto max_bytes_per_word = get_attribute_value<int>(attributes, "max_bytes_per_word", 100);
++        return std::make_shared<WordpieceTokenizer>(inputs, suffix_indicator, max_bytes_per_word)->outputs();
+     } else if (op_type == "SentencepieceTokenizer") {
+         auto nbest_size = get_attribute_value<int32_t>(attributes, "nbest_size", 0);
+         auto alpha = get_attribute_value<float>(attributes, "alpha", 0.0f);

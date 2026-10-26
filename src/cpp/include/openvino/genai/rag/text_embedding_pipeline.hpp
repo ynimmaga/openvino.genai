@@ -8,6 +8,7 @@
 #include <variant>
 
 #include "openvino/genai/tokenizer.hpp"
+#include "openvino/runtime/compiled_model.hpp"
 
 namespace ov {
 namespace genai {
@@ -155,6 +156,17 @@ public:
                           const std::string& device,
                           Properties&&... properties)
         : TextEmbeddingPipeline(models_path, device, ov::AnyMap{std::forward<Properties>(properties)...}) {}
+
+    /**
+     * @brief Constructs a pipeline around a model that is already compiled, e.g. by a plugin that loads GGUF
+     * directly (the "GGML" device).
+     *
+     * @param compiled_model Model with inputs input_ids, attention_mask and (optionally) token_type_ids that
+     * returns per-token `last_hidden_state` [batch, seq, hidden]; the pipeline pools and normalizes it on CPU
+     * @param tokenizer Tokenizer matching the model
+     * @param config Pipeline configuration
+     */
+    TextEmbeddingPipeline(const ov::CompiledModel& compiled_model, const Tokenizer& tokenizer, const Config& config);
 
     /**
      * @brief Computes embeddings for a vector of texts

@@ -1,0 +1,32 @@
+diff --git a/include/minja/minja.hpp b/include/minja/minja.hpp
+index 5ed0556..41793bc 100644
+--- a/include/minja/minja.hpp
++++ b/include/minja/minja.hpp
+@@ -2192,8 +2192,13 @@ private:
+ 
+       auto value = parseValue();
+ 
+-      while (it != end && consumeSpaces() && peekSymbols({ "[", "." })) {
+-        if (!consumeToken("[").empty()) {
++      while (it != end && consumeSpaces() && peekSymbols({ "[", ".", "(" })) {
++        if (peekSymbols({ "(" })) {
++          // a call, possibly followed by more postfix operations: f(x).method(y), f(x)[0], f(x)(y)
++          auto location = get_location();
++          auto callParams = parseCallArgs();
++          value = std::make_shared<CallExpr>(location, std::move(value), std::move(callParams));
++        } else if (!consumeToken("[").empty()) {
+           std::shared_ptr<Expression> index;
+           auto slice_loc = get_location();
+           std::shared_ptr<Expression> start, end, step;
+@@ -2241,11 +2246,6 @@ private:
+         consumeSpaces();
+       }
+ 
+-      if (peekSymbols({ "(" })) {
+-        auto location = get_location();
+-        auto callParams = parseCallArgs();
+-        value = std::make_shared<CallExpr>(location, std::move(value), std::move(callParams));
+-      }
+       return value;
+     }
+ 

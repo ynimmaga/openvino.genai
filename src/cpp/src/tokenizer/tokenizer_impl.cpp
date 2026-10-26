@@ -305,6 +305,39 @@ void Tokenizer::TokenizerImpl::setup_tokenizer(const std::filesystem::path& mode
         if (auto val = get_if_exist<ov::Tensor>(tokenizer_config, "eos_token_id")) {
             m_eos_token_id = static_cast<int64_t>((*val).data<uint32_t>()[0]);
         }
+        // A SentencePiece detokenizer drops control tokens, so the special-token strings (needed by chat
+        // templates) come from the vocabulary rather than from decoding their ids.
+        if (auto model_name = get_if_exist<std::string>(tokenizer_config, "model"); model_name && (*model_name == "llama" || *model_name == "plamo2" || *model_name == "t5")) {
+            if (auto vocab = get_if_exist<std::vector<std::string>>(tokenizer_config, "tokens")) {
+                auto piece = [&](int64_t id) {
+                    return id >= 0 && id < static_cast<int64_t>(vocab->size()) ? (*vocab)[id] : std::string{};
+                };
+                m_bos_token = piece(m_bos_token_id);
+                m_eos_token = piece(m_eos_token_id);
+                m_pad_token = piece(m_pad_token_id);
+            }
+        }
+        if (auto val = get_if_exist<ov::Tensor>(tokenizer_config, "add_eos_token")) {
+            m_add_eos = val->get_byte_size() > 0 && static_cast<const uint8_t*>(val->data())[0] != 0;
+        }
+        if (auto model_name = get_if_exist<std::string>(tokenizer_config, "model"); model_name && *model_name == "bert") {
+            // llama.cpp's BERT vocabulary always frames text as [CLS] ... [SEP] (bos / eos ids)
+            m_add_bos_if_missing = true;
+            m_add_eos = true;
+            // some files give only [CLS]/[SEP]
+            auto id_of = [&](const char* key) {
+                auto val = get_if_exist<ov::Tensor>(tokenizer_config, key);
+                return val ? static_cast<int64_t>(val->data<uint32_t>()[0]) : int64_t{-1};
+            };
+            if (m_bos_token_id < 0) m_bos_token_id = id_of("cls_token_id");
+            if (m_eos_token_id < 0) {
+                m_eos_token_id = id_of("seperator_token_id");  // [sic] as the converter spells it
+                if (m_eos_token_id < 0) m_eos_token_id = id_of("separator_token_id");
+            }
+        }
+        if (auto val = get_if_exist<ov::Tensor>(tokenizer_config, "add_bos_token")) {
+            m_add_bos_if_missing = val->get_byte_size() > 0 && static_cast<const uint8_t*>(val->data())[0] != 0;
+        }
         if (auto val = get_if_exist<std::string>(tokenizer_config, "chat_template")) {
             m_chat_template = *val;
         }         
@@ -724,7 +757,56 @@ TokenizedInputs Tokenizer::TokenizerImpl::encode(const std::vector<std::string>&
         );
     }
 
-    return {unpadded.input_ids, unpadded.attention_mask};
+    TokenizedInputs result{unpadded.input_ids, unpadded.attention_mask};
+    add_gguf_special_tokens(result, tokenization_params);
+    return result;
+}
+
+void Tokenizer::TokenizerImpl::add_gguf_special_tokens(TokenizedInputs& inputs, const ov::AnyMap& params) const {
+    std::optional<bool> requested;
+    ov::genai::utils::read_anymap_param(params, add_special_tokens.name(), requested);
+    const bool bos = m_add_bos_if_missing && m_bos_token_id >= 0, eos = m_add_eos && m_eos_token_id >= 0;
+    if (!requested.value_or(false) || !(bos || eos)) {
+        return;
+    }
+    const auto shape = inputs.input_ids.get_shape();
+    const size_t batch = shape[0], width = shape[1];
+    const auto* ids = inputs.input_ids.data<int64_t>();
+    const auto* mask = inputs.attention_mask.data<int64_t>();
+
+    std::vector<std::vector<int64_t>> rows(batch);
+    bool left_padded = true;  // the GGUF tokenizer graphs pad on the left unless asked otherwise
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t i = 0; i < width; i++) {
+            if (mask[b * width + i]) {
+                rows[b].push_back(ids[b * width + i]);
+            }
+        }
+        if (rows[b].size() < width) {
+            left_padded = !mask[b * width];
+        }
+        if (bos && (rows[b].empty() || rows[b].front() != m_bos_token_id)) {
+            rows[b].insert(rows[b].begin(), m_bos_token_id);
+        }
+        if (eos && (rows[b].empty() || rows[b].back() != m_eos_token_id)) {
+            rows[b].push_back(m_eos_token_id);
+        }
+    }
+    size_t new_width = 0;
+    for (const auto& r : rows) {
+        new_width = std::max(new_width, r.size());
+    }
+    ov::Tensor new_ids(ov::element::i64, {batch, new_width}), new_mask(ov::element::i64, {batch, new_width});
+    std::fill_n(new_ids.data<int64_t>(), batch * new_width, std::max<int64_t>(m_pad_token_id, 0));
+    std::fill_n(new_mask.data<int64_t>(), batch * new_width, 0);
+    for (size_t b = 0; b < batch; b++) {
+        const size_t start = left_padded ? new_width - rows[b].size() : 0;
+        for (size_t i = 0; i < rows[b].size(); i++) {
+            new_ids.data<int64_t>()[b * new_width + start + i] = rows[b][i];
+            new_mask.data<int64_t>()[b * new_width + start + i] = 1;
+        }
+    }
+    inputs = {new_ids, new_mask};
 }
 
 TokenizedInputs Tokenizer::TokenizerImpl::get_copied_results(ov::Tensor input_ids, ov::Tensor attention_mask) {
@@ -862,6 +944,9 @@ std::string Tokenizer::TokenizerImpl::apply_chat_template(
     OPENVINO_ASSERT(!result.empty(), "Applied chat template resulted in an empty string. "
                                      "Please check the chat template or apply template manually to your prompt before calling generate."
                                      "For example: <start_of_turn>user{user_prompt}<end_of_turn><start_of_turn>model");
+    if (m_add_bos_if_missing && !m_bos_token.empty() && result.compare(0, m_bos_token.size(), m_bos_token) != 0) {
+        result = m_bos_token + result;
+    }
     return result;
 }
 

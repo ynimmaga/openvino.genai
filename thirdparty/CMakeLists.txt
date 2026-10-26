@@ -5,6 +5,11 @@
 option(BUILD_TOKENIZERS "Build OpenVINO Tokenizers together with OpenVINO GenAI" ON)
 
 if(BUILD_TOKENIZERS)
+    # The C node factory GenAI builds GGUF tokenizers with lacks the WordPiece and charsmap-less
+    # normalization ops BERT vocabularies need; the patch adds them (idempotent).
+    execute_process(COMMAND ${CMAKE_COMMAND} -DPATCH=${CMAKE_CURRENT_SOURCE_DIR}/patches/openvino-tokenizers-wordpiece.patch
+                            -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply_patch.cmake
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/openvino_tokenizers)
     add_subdirectory(./openvino_tokenizers/ "${CMAKE_BINARY_DIR}/openvino_tokenizers/")
     # Put binaries to a single dir to mimic package structure.
     set_target_properties(openvino_tokenizers PROPERTIES

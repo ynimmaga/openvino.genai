@@ -38,6 +38,13 @@ public:
     bool is_paired_input = false;
     bool m_older_than_24_5 = false;
     int64_t m_pad_token_id = -1;
+    // GGUF "tokenizer.ggml.add_bos_token": the model expects a BOS even when its chat template does not
+    // emit one, as llama.cpp adds it unless the rendered prompt already starts with it.
+    bool m_add_bos_if_missing = false;
+    // GGUF "tokenizer.ggml.add_eos_token". Together with add_bos_token these are applied to token ids when
+    // a caller passes add_special_tokens=true explicitly (the GGUF tokenizer graph has no such switch).
+    bool m_add_eos = false;
+    void add_gguf_special_tokens(TokenizedInputs& inputs, const ov::AnyMap& params) const;
     int64_t m_bos_token_id = -1;
     int64_t m_eos_token_id = -1;
     std::string m_pad_token = {};

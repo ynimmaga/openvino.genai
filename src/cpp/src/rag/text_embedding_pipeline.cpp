@@ -81,25 +81,7 @@ public:
 
         auto model = core.read_model(models_path / "openvino_model.xml", {}, std::as_const(properties));
 
-        bool is_seq_len_fixed = true;
-        m_tokenization_params.insert({truncation.name(), true});
-
-        if (m_config.max_length) {
-            m_tokenization_params.insert({max_length.name(), *m_config.max_length});
-        } else {
-            is_seq_len_fixed = false;
-        }
-
-        if (m_config.pad_to_max_length) {
-            m_tokenization_params.insert({pad_to_max_length.name(), *m_config.pad_to_max_length});
-            is_seq_len_fixed &= m_config.pad_to_max_length.value();
-        } else {
-            is_seq_len_fixed = false;
-        }
-
-        if (m_config.padding_side) {
-            m_tokenization_params.insert({padding_side.name(), *m_config.padding_side});
-        }
+        const bool is_seq_len_fixed = init_tokenization_params();
 
         if (device == "NPU") {
             m_request = create_text_embedding_npu_request(model,
@@ -117,6 +99,25 @@ public:
             utils::print_compiled_model_properties(compiled_model, "text embedding model");
             m_request = compiled_model.create_infer_request();
         }
+    };
+
+    /// A model compiled elsewhere (e.g. the GGML plugin) that returns per-token hidden states: pooling and
+    /// normalization run as a separate CPU model, as on NPU.
+    TextEmbeddingPipelineImpl(const ov::CompiledModel& compiled_model, const Tokenizer& tokenizer, const Config& config)
+        : m_config{config},
+          m_tokenizer{tokenizer} {
+        m_config.validate();
+        init_tokenization_params();
+        // GGUF vocabularies state their BOS/EOS in metadata; ask for them explicitly (a no-op for other tokenizers)
+        m_tokenization_params.insert({add_special_tokens.name(), true});
+        const auto output = compiled_model.output("last_hidden_state");
+        auto post_model = utils::create_post_model(output.get_element_type(),
+                                                   output.get_partial_shape()[2],
+                                                   "text_embedding",
+                                                   m_config);
+        m_post_request = utils::singleton_core().compile_model(post_model, "CPU").create_infer_request();
+        ov::CompiledModel compiled = compiled_model;  // a handle; create_infer_request is not const
+        m_request = compiled.create_infer_request();
     };
 
     EmbeddingResults embed_documents(const std::vector<std::string>& texts) {
@@ -170,36 +171,61 @@ private:
     std::optional<size_t> m_max_position_embeddings;
     ov::Tensor m_attention_mask;
 
+    /// @return whether the sequence length is fixed
+    bool init_tokenization_params() {
+        bool is_seq_len_fixed = true;
+        m_tokenization_params.insert({truncation.name(), true});
+
+        if (m_config.max_length) {
+            m_tokenization_params.insert({max_length.name(), *m_config.max_length});
+        } else {
+            is_seq_len_fixed = false;
+        }
+
+        if (m_config.pad_to_max_length) {
+            m_tokenization_params.insert({pad_to_max_length.name(), *m_config.pad_to_max_length});
+            is_seq_len_fixed &= m_config.pad_to_max_length.value();
+        } else {
+            is_seq_len_fixed = false;
+        }
+
+        if (m_config.padding_side) {
+            m_tokenization_params.insert({padding_side.name(), *m_config.padding_side});
+        }
+        return is_seq_len_fixed;
+    }
+
     ov::Tensor post_model_infer(const ov::Tensor& input) {
         if (!m_post_request) {
             return input;
         }
 
         const auto input_shape = input.get_shape();
+        const size_t batch_size = input_shape[0];
         const size_t sequence_length = input_shape[1];
-        const size_t original_mask_size = m_attention_mask.get_size();
-        OPENVINO_ASSERT(sequence_length >= original_mask_size,
+        const size_t original_mask_size = m_attention_mask.get_shape()[1];
+        OPENVINO_ASSERT(sequence_length >= original_mask_size && m_attention_mask.get_shape()[0] == batch_size,
                         "Attention mask size mismatch: expected at least ",
                         original_mask_size,
                         " elements, but got ",
                         sequence_length);
 
         // Create attention mask tensor matching the embedding output shape
-        ov::Tensor attention_mask_tensor{ov::element::i64, {1, sequence_length}};
+        ov::Tensor attention_mask_tensor{ov::element::i64, {batch_size, sequence_length}};
+        std::fill_n(attention_mask_tensor.data<int64_t>(), attention_mask_tensor.get_size(), 0);
 
-        // Copy original attention mask
-        std::copy_n(m_attention_mask.data<int64_t>(), original_mask_size, attention_mask_tensor.data<int64_t>());
+        // Copy original attention mask, row by row
+        for (size_t b = 0; b < batch_size; b++) {
+            std::copy_n(m_attention_mask.data<int64_t>() + b * original_mask_size,
+                        original_mask_size,
+                        attention_mask_tensor.data<int64_t>() + b * sequence_length);
+        }
 
         // When prefill-chunk is enabled, the input sequence length is aligned to the chunk size.
         // For example, if the input sequence length is 3800 and the chunk size is 1024, the input
         // sequence length will be reset to 4096. In this case, the attention_mask_tensor size is 4096,
         // which is greater than the original m_attention_mask size of 3800. We need to zero-fill
         // the remaining elements in the attention_mask_tensor to ensure correct masking behavior.
-        if (sequence_length > original_mask_size) {
-            std::fill_n(attention_mask_tensor.data<int64_t>() + original_mask_size,
-                        sequence_length - original_mask_size,
-                        0);
-        }
 
         // Run post-processing inference
         m_post_request.set_tensor("attention_mask", attention_mask_tensor);
@@ -309,6 +335,12 @@ TextEmbeddingPipeline::TextEmbeddingPipeline(const std::filesystem::path& models
     const auto plugin_properties = utils::remove_config_properties(properties);
 
     m_impl = std::make_unique<TextEmbeddingPipelineImpl>(models_path, device, Config(properties), plugin_properties);
+};
+
+TextEmbeddingPipeline::TextEmbeddingPipeline(const ov::CompiledModel& compiled_model,
+                                             const Tokenizer& tokenizer,
+                                             const Config& config) {
+    m_impl = std::make_unique<TextEmbeddingPipelineImpl>(compiled_model, tokenizer, config);
 };
 
 EmbeddingResults TextEmbeddingPipeline::embed_documents(const std::vector<std::string>& texts) {

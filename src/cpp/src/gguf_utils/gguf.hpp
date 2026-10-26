@@ -51,3 +51,6 @@ std::tuple<std::map<std::string, GGUFMetaData>,
 load_gguf(const std::string& file);
 
 GGUFLoad get_gguf_data(const std::string& file);
+
+/// Metadata only: no tensor is read or dequantized (e.g. to build the tokenizer).
+std::unordered_map<std::string, GGUFMetaData> get_gguf_metadata(const std::string& file);

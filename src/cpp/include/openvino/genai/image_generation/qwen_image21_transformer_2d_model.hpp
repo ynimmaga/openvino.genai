@@ -76,6 +76,9 @@ private:
     AdapterController m_adapter_controller;
     ov::InferRequest m_request;
     std::shared_ptr<ov::Model> m_model;
+    // <root>/ggml.json instead of an OpenVINO IR: {"weights": "<model>.gguf", "artifacts": ["<graph>.json", ...],
+    // "backend": "Vulkan0"} -- the transformer then runs on the "GGML" device (see compile()).
+    std::filesystem::path m_ggml_config;
 };
 
 }  // namespace genai

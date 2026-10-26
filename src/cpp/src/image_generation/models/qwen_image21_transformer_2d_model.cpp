@@ -31,7 +31,11 @@ QwenImage21Transformer2DModel::Config::Config(const std::filesystem::path& confi
 
 QwenImage21Transformer2DModel::QwenImage21Transformer2DModel(const std::filesystem::path& root_dir)
     : m_config(root_dir / "config.json") {
-    m_model = utils::singleton_core().read_model(root_dir / "openvino_model.xml");
+    if (std::filesystem::exists(root_dir / "ggml.json")) {
+        m_ggml_config = root_dir / "ggml.json";
+    } else {
+        m_model = utils::singleton_core().read_model(root_dir / "openvino_model.xml");
+    }
 }
 
 QwenImage21Transformer2DModel::QwenImage21Transformer2DModel(const std::filesystem::path& root_dir,
@@ -64,6 +68,34 @@ const QwenImage21Transformer2DModel::Config& QwenImage21Transformer2DModel::get_
 
 QwenImage21Transformer2DModel& QwenImage21Transformer2DModel::compile(const std::string& device,
                                                                       const ov::AnyMap& properties) {
+    if (!m_ggml_config.empty()) {
+        // The graph and weights come from a GGUF (see ggml.json); the plugin owns the weights and the backend.
+        OPENVINO_ASSERT(device.rfind("GGML", 0) == 0, "A transformer described by ggml.json must be compiled for the GGML device, not ", device);
+        OPENVINO_ASSERT(!m_request, "Model has been already compiled. Cannot re-compile already compiled model");
+        std::ifstream file(m_ggml_config);
+        const nlohmann::json data = nlohmann::json::parse(file);
+        const auto root = m_ggml_config.parent_path();
+        const auto resolve = [&](const std::string& path) {
+            return std::filesystem::path(path).is_absolute() ? std::filesystem::path(path) : root / path;
+        };
+        const auto artifacts = data.at("artifacts").get<std::vector<std::string>>();
+        OPENVINO_ASSERT(!artifacts.empty(), m_ggml_config, " lists no artifacts");
+        ov::AnyMap ggml_properties{{"GGML_WEIGHTS", resolve(data.at("weights").get<std::string>()).string()}};
+        if (data.contains("backend")) {
+            ggml_properties["GGML_BACKEND"] = data["backend"].get<std::string>();
+        }
+        std::string buckets;
+        for (size_t i = 1; i < artifacts.size(); i++) {
+            buckets += (i > 1 ? ";" : "") + resolve(artifacts[i]).string();
+        }
+        if (!buckets.empty()) {
+            ggml_properties["GGML_BUCKETS"] = buckets;
+        }
+        m_request = utils::singleton_core()
+                        .compile_model(resolve(artifacts.front()).string(), "GGML", ggml_properties)
+                        .create_infer_request();
+        return *this;
+    }
     OPENVINO_ASSERT(m_model, "Model has been already compiled. Cannot re-compile already compiled model");
     std::optional<AdapterConfig> adapters;
     auto filtered_properties = extract_adapters_from_properties(properties, &adapters);
